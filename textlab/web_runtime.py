@@ -101,7 +101,7 @@ def require_site_access() -> None:
         st.session_state.pop(_PASSWORD_FIELD, None)
         return
     st.session_state.pop(_AUTH_FIELD, None)
-    st.title("문장 실험실 로그인")
+    st.title("서스데반의 AI 판독기 로그인")
     st.caption("운영자가 설정한 사이트 비밀번호를 입력하세요.")
     with st.form("_textlab_login_form"):
         st.text_input("사이트 비밀번호", type="password", key=_PASSWORD_FIELD)

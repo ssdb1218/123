@@ -11,13 +11,33 @@ from dotenv import load_dotenv
 
 from textlab.jobs import Worker
 from textlab.models import RunState, Settings
+from textlab.pdf_import import MAX_TEXT_CHARS, PdfImportError, extract_pdf_text
 from textlab.site import SAMPLE_TEXT, install_theme, render_empty_state, render_guide, render_hero
 from textlab.web_runtime import audit_directory, require_site_access
 
 load_dotenv(override=False)
-st.set_page_config(page_title="TextLab · 의미를 지키는 문장 실험실", page_icon="✍️", layout="wide")
+st.set_page_config(page_title="서스데반의 AI 판독기", page_icon="✍️", layout="wide")
 require_site_access()
 install_theme()
+
+
+def import_source_pdf() -> None:
+    uploaded = st.session_state.get("source_pdf")
+    st.session_state.pop("_pdf_import_message", None)
+    if uploaded is None:
+        return
+    try:
+        with st.spinner("PDF에서 본문을 추출하고 있습니다…"):
+            extracted = extract_pdf_text(uploaded.getvalue())
+    except PdfImportError as exc:
+        st.session_state["_pdf_import_message"] = ("error", str(exc))
+        return
+    # Upload callbacks run before the text widget is rendered. Update only on a
+    # new upload so subsequent reruns preserve the user's edits to the text.
+    st.session_state["source_text"] = extracted
+    st.session_state["_pdf_import_message"] = (
+        "success", f"PDF에서 {len(extracted):,}자를 추출했습니다. 아래 원본 텍스트를 확인하고 시작하세요."
+    )
 
 
 def render_diff(before: str, after: str) -> None:
@@ -118,7 +138,7 @@ settings = Settings(
 
 st.markdown('<section id="workspace" aria-label="글 다듬기"><p class="tl-section-label">YOUR WORKSPACE</p>'
             '<h2 class="tl-section-title">어떤 글을 다듬어 볼까요?</h2>'
-            '<p class="tl-section-subtitle">원문을 붙여 넣으세요. 수치·인용문은 보호하고, 중요한 수정은 먼저 확인합니다.</p></section>',
+            '<p class="tl-section-subtitle">원문을 붙여 넣거나 PDF에서 본문을 가져오세요. 수치·인용문은 보호하고, 중요한 수정은 먼저 확인합니다.</p></section>',
             unsafe_allow_html=True)
 if mode == "mock":
     st.warning("테스트용 Mock 모드 · 판독 점수와 문장 개선은 모의 결과입니다. 실제 AI 판독 결과가 아닙니다.")
@@ -135,7 +155,20 @@ sample_cols[0].caption("아직 준비된 글이 없다면 예시로 먼저 살�
 sample_cols[1].button("예시 글 불러오기", on_click=load_sample, key="load_sample",
                       disabled=bool(st.session_state.get("worker") and st.session_state.worker.is_alive),
                       use_container_width=True)
-text = st.text_area("원본 텍스트", height=250, max_chars=20000,
+st.file_uploader(
+    "PDF에서 본문 가져오기", type=["pdf"], key="source_pdf", on_change=import_source_pdf,
+    help="최대 20MB · 추출 본문 최대 20,000자. 업로드하면 아래 입력 내용을 바꿉니다. "
+         "텍스트가 포함된 PDF를 지원하며 스캔 이미지의 OCR은 지원하지 않습니다.",
+)
+if message := st.session_state.get("_pdf_import_message"):
+    level, detail = message
+    if level == "error":
+        st.error(detail)
+    else:
+        st.success(detail)
+
+
+text = st.text_area("원본 텍스트", height=250, max_chars=MAX_TEXT_CHARS,
                     placeholder="여기에 글을 붙여 넣어 주세요.\n\n원문의 핵심 의미와 문체를 유지하며 흐름과 표현을 다듬습니다.", key="source_text")
 st.caption(f"{len(text):,} / 20,000자 · 개인정보나 비밀정보는 입력하지 마세요.")
 consent = False

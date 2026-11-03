@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import threading
 from pathlib import Path
 
@@ -15,6 +16,88 @@ APP = str(Path(__file__).resolve().parents[1] / "app.py")
 
 def button(at, label):
     return next(item for item in at.button if item.label == label)
+
+
+def pdf_upload(pages):
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.pdfgen.canvas import Canvas
+
+    font = Path(APP).parent / "textlab" / "assets" / "NanumGothic-Regular.ttf"
+    font_name = "UiPdfImportKorean"
+    if font_name not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(TTFont(font_name, str(font)))
+    output = io.BytesIO()
+    canvas = Canvas(output)
+    for page in pages:
+        canvas.setFont(font_name, 12)
+        canvas.drawString(50, 750, page)
+        canvas.showPage()
+    canvas.save()
+    return "source.pdf", output.getvalue(), "application/pdf"
+
+
+def test_pdf_upload_populates_editor_and_is_used_by_mock_analysis(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    pages = ["기술은 일상을 바꿉니다.", "그러나 책임 있는 활용이 중요합니다."]
+    expected = "\n\n".join(pages)
+    at = AppTest.from_file(APP, default_timeout=10).run()
+
+    at.file_uploader(key="source_pdf").set_value(pdf_upload(pages)).run()
+
+    assert not at.exception
+    assert at.text_area(key="source_text").value == expected
+    assert any("추출했습니다" in item.value for item in at.success)
+    assert "worker" not in at.session_state
+    assert not button(at, "시작").disabled
+    button(at, "시작").click().run()
+    worker = at.session_state["worker"]
+    worker._thread.join(timeout=5)
+    assert not worker.is_alive
+    assert worker.snapshot().original_text == expected
+    assert worker.snapshot().initial.is_mock
+    assert not worker.snapshot().error
+
+
+def test_pdf_reruns_preserve_edits_and_same_file_can_be_selected_again(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    uploaded = pdf_upload(["PDF에서 가져온 원문입니다."])
+    at = AppTest.from_file(APP).run()
+    at.file_uploader(key="source_pdf").set_value(uploaded).run()
+    assert at.text_area(key="source_text").value == "PDF에서 가져온 원문입니다."
+
+    edited = "업로드 뒤 사용자가 직접 수정한 본문입니다."
+    at.text_area(key="source_text").set_value(edited).run()
+    at.run()
+    assert not at.exception
+    assert at.text_area(key="source_text").value == edited
+
+    at.file_uploader(key="source_pdf").clear().run()
+    assert not at.exception
+    assert at.text_area(key="source_text").value == edited
+    assert not at.success
+
+    at.file_uploader(key="source_pdf").set_value(uploaded).run()
+    assert not at.exception
+    assert at.text_area(key="source_text").value == "PDF에서 가져온 원문입니다."
+    assert any("추출했습니다" in item.value for item in at.success)
+
+
+def test_pdf_upload_error_preserves_existing_text_and_clears_success(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    at = AppTest.from_file(APP).run()
+    at.file_uploader(key="source_pdf").set_value(pdf_upload(["정상 PDF 본문입니다."])).run()
+    edited = "읽기 실패 후에도 유지해야 할 사용자 본문입니다."
+    at.text_area(key="source_text").set_value(edited).run()
+
+    at.file_uploader(key="source_pdf").set_value(("broken.pdf", b"not a PDF", "application/pdf")).run()
+
+    assert not at.exception
+    assert at.text_area(key="source_text").value == edited
+    assert any("PDF를 읽을 수 없습니다" in item.value for item in at.error)
+    assert not at.success
+    assert not button(at, "시작").disabled
+    assert "worker" not in at.session_state
 
 
 def test_ui_defaults_and_complete_offline_workflow(monkeypatch, tmp_path):
