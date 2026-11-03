@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import threading
 from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
 
 from textlab.jobs import Worker
-from textlab.models import Candidate, Detection, RunState, Settings
+from textlab.models import Candidate, RunState, Settings
 
 
 APP = str(Path(__file__).resolve().parents[1] / "app.py")
@@ -55,7 +56,9 @@ def test_pdf_upload_populates_editor_and_is_used_by_mock_analysis(monkeypatch, t
     worker._thread.join(timeout=5)
     assert not worker.is_alive
     assert worker.snapshot().original_text == expected
-    assert worker.snapshot().initial.is_mock
+    assert worker.snapshot().is_mock
+    assert worker.snapshot().editing_only
+    assert worker.snapshot().initial is None
     assert not worker.snapshot().error
 
 
@@ -105,9 +108,9 @@ def test_ui_defaults_and_complete_offline_workflow(monkeypatch, tmp_path):
     at = AppTest.from_file(APP, default_timeout=10).run()
     assert not at.exception
     values = {item.label: item.value for item in at.number_input}
-    assert values["목표 AI 탐지 점수 (%)"] == 5.0
-    assert values["최대 반복 횟수"] == 20
-    assert values["반복당 후보"] == 3
+    assert values["최대 개선 회차"] == 1
+    assert values["회차당 후보"] == 3
+    assert not any("탐지" in label or "목표" in label for label in values)
     assert at.multiselect[0].value == ["PDF", "DOCX"]
     assert next(item for item in at.checkbox if item.label == "중요 수정은 채택 전 사용자 승인").value
     assert button(at, "시작").disabled
@@ -118,13 +121,16 @@ def test_ui_defaults_and_complete_offline_workflow(monkeypatch, tmp_path):
     state = worker.snapshot()
     assert not worker.is_alive
     assert state.status == "completed"
-    assert state.initial.is_mock
+    assert state.is_mock
+    assert state.editing_only
+    assert state.initial is state.current is state.best is None
     assert not state.error
     at.run()
     assert not at.exception
     assert len(at.get("download_button")) == 3
     assert any("Mock" in item.value for item in at.warning)
-    assert any("최초 점수" in item.label and item.value != "—" for item in at.metric)
+    assert any(item.label == "채택한 수정" for item in at.metric)
+    assert not any("점수" in item.label for item in at.metric)
     assert len(list((tmp_path / ".runs").glob("*.json"))) == 1
 
 
@@ -145,14 +151,67 @@ def test_live_requires_consent_and_configuration_without_mock_fallback(monkeypat
     assert not at.exception
 
 
+def test_live_editing_works_with_only_openai_and_shows_no_detection_scores(monkeypatch, tmp_path):
+    import httpx
+    import textlab.providers as providers
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TEXTLAB_HOSTED", "0")
+    monkeypatch.setenv("LLM_API_KEY", "fake-ui-openai-key")
+    monkeypatch.delenv("GPTZERO_API_KEY", raising=False)
+    monkeypatch.delenv("APP_ACCESS_PASSWORD", raising=False)
+    requests = []
+    revised = "책은 생각의 폭을 넓혀 줍니다."
+
+    def handler(request):
+        requests.append(request)
+        assert request.url.host == "api.openai.com"
+        body = json.loads(request.content)
+        source = json.loads(body["messages"][1]["content"])
+        if "count" in source:
+            content = {"candidates": [
+                {"text": revised + "\n" * (i + 1), "changes": ["표현을 자연스럽게 정리"],
+                 "major_change": False} for i in range(source["count"])
+            ]}
+        else:
+            assert source["original"] == "책은 생각을 넓혀 줍니다."
+            content = {"score": 0.99, "preserves_meaning": True, "reason": "원문 의미 유지"}
+        return httpx.Response(200, json={"choices": [{
+            "finish_reason": "stop", "message": {"content": json.dumps(content, ensure_ascii=False)}
+        }]})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(providers.httpx, "AsyncClient",
+                        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+    at = AppTest.from_file(APP, default_timeout=10).run()
+    at.radio(key="mode").set_value("실제 API").run()
+    assert not any("GPTZERO" in item.value for item in at.caption)
+    at.text_area(key="source_text").set_value("책은 생각을 넓혀 줍니다.").run()
+    at.checkbox(key="external_consent").check().run()
+    button(at, "시작").click().run()
+    worker = at.session_state["worker"]
+    worker._thread.join(timeout=5)
+    state = worker.snapshot()
+    assert not worker.is_alive
+    assert state.status == "completed"
+    assert state.editing_only and not state.is_mock
+    assert state.best_text == revised + "\n"
+    assert state.initial is state.current is state.best is None
+    assert len(requests) == 2
+    at.run()
+    assert not at.exception
+    assert not at.error
+    assert not any("점수" in item.label for item in at.metric)
+    assert len(at.get("download_button")) == 3
+
+
 def test_approval_ui_queues_exact_candidate_once_and_escapes_text(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     at = AppTest.from_file(APP).run()
     worker = Worker("원본", Settings(), "mock")
-    candidate = Candidate("1-2", '<script>alert("x")</script>수정', ["문장 흐름 개선"], True,
-                          Detection(10, "mock", True))
+    candidate = Candidate("1-2", '<script>alert("x")</script>수정', ["문장 흐름 개선"], True)
     state = RunState("원본", Settings(), current_text="원본", best_text="원본", is_mock=True,
-                     status="awaiting_approval", pending_candidate=candidate)
+                     status="awaiting_approval", pending_candidate=candidate, editing_only=True)
     worker._publish(state)
     at.session_state["worker"] = worker
     at.run()
@@ -170,13 +229,13 @@ def test_worker_stop_cancels_pending_request_and_keeps_snapshot_isolated(monkeyp
     monkeypatch.chdir(tmp_path)
     started = threading.Event()
 
-    class SlowDetector:
+    class SlowRewriter:
         is_mock = True
 
-        async def detect(self, text):
+        async def generate(self, *args):
             started.set()
             await asyncio.sleep(20)
-            return Detection(80, "mock", True)
+            return []
 
     class Budget:
         def snapshot(self):
@@ -189,7 +248,7 @@ def test_worker_stop_cancels_pending_request_and_keeps_snapshot_isolated(monkeyp
             self.closed = True
 
     client = Client()
-    monkeypatch.setattr(providers, "build_providers", lambda mode, settings: (SlowDetector(), object(), Budget(), client))
+    monkeypatch.setattr(providers, "build_editing_providers", lambda mode, settings: (SlowRewriter(), Budget(), client))
     settings = Settings()
     worker = Worker("중지 검증 원문", settings, "mock")
     settings.max_iterations = 1
@@ -223,9 +282,8 @@ def test_export_cache_is_session_local_reused_and_invalidated(monkeypatch, tmp_p
     monkeypatch.setattr(exports, "export_pdf", fake_pdf)
     monkeypatch.setattr(exports, "export_docx", fake_docx)
     worker = Worker("원본", Settings(), "mock")
-    detection = Detection(20, "mock", True)
     state = RunState("원본", Settings(), current_text="원본", best_text="원본", is_mock=True,
-                     status="completed", initial=detection, current=detection, best=detection)
+                     status="completed", editing_only=True)
     worker._publish(state)
 
     first = AppTest.from_file(APP).run()
@@ -266,7 +324,7 @@ def test_website_navigation_sample_and_empty_state(monkeypatch, tmp_path):
     assert at.text_area(key="source_text").value == SAMPLE_TEXT
     assert "worker" not in at.session_state
     assert not button(at, "시작").disabled
-    assert any("실제 AI 판독 결과가 아닙니다" in item.value for item in at.warning)
+    assert any("실제 OpenAI 문장 개선을 실행하지 않습니다" in item.value for item in at.warning)
 
 
 def test_privacy_copy_matches_disabled_server_history(monkeypatch, tmp_path):

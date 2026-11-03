@@ -21,6 +21,8 @@ class Detector(Protocol):
 
 
 class Rewriter(Protocol):
+    is_mock: bool
+
     async def generate(self, original: str, current: str, count: int,
                        analysis: dict[str, Any]) -> list[Revision]: ...
 
@@ -78,6 +80,7 @@ Return only a JSON object, without Markdown fences."""
 
 
 class OpenAIRewriter:
+    is_mock = False
     endpoint = "https://api.openai.com/v1/chat/completions"
 
     def __init__(self, transport: AsyncTransport, api_key: str,
@@ -120,7 +123,7 @@ class OpenAIRewriter:
                 raise TypeError("JSON object")
             return result
         except (KeyError, IndexError, TypeError, ValueError):
-            raise APIError("LLM 응답 형식이 올바르지 않습니다. 실제 점수나 수정본을 만들지 않았습니다.") from None
+            raise APIError("OpenAI 응답 형식이 올바르지 않습니다. 수정본을 채택하지 않았습니다.") from None
 
     async def generate(self, original: str, current: str, count: int,
                        analysis: dict[str, Any]) -> list[Revision]:
@@ -128,7 +131,10 @@ class OpenAIRewriter:
             'Generate exactly count distinct revisions. Output schema: '
             '{"candidates":[{"text":"...","changes":["specific change"],'
             '"major_change":false}]}. Mark major_change true for substantial '
-            'restructuring or a change that warrants human review.',
+            'restructuring or a change that warrants human review. '
+            'Order candidates from most to least useful for clarity and natural '
+            'flow while preserving the original meaning. Do not estimate or '
+            'rank candidates by AI detection scores.',
             {"original": original, "current": current, "count": count, "analysis": analysis},
         )
         items = body.get("candidates")
@@ -175,6 +181,8 @@ class MockDetector:
 class MockRewriter:
     """Whitespace-only examples keep demo mode independent of an LLM service."""
 
+    is_mock = True
+
     async def generate(self, original: str, current: str, count: int,
                        analysis: dict[str, Any]) -> list[Revision]:
         normalized = re.sub(r"[ \t]+", " ", current).strip()
@@ -216,3 +224,24 @@ def build_providers(mode: str, settings: Settings) -> tuple[Detector, Rewriter, 
     return (GPTZeroDetector(transport, detector_key),
             OpenAIRewriter(transport, llm_key, os.environ.get("LLM_MODEL", "gpt-4o-mini")),
             budget, client)
+
+
+def build_editing_providers(mode: str, settings: Settings) -> tuple[Rewriter, Budget, httpx.AsyncClient]:
+    """Build the editor without creating or requiring an AI detector."""
+    settings.validate()
+    if mode not in {"mock", "live"}:
+        raise ConfigurationError("문장 개선 모드는 mock 또는 live여야 합니다.")
+    llm_key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    if mode == "live":
+        if not llm_key:
+            raise ConfigurationError("문장 개선에 필요한 LLM_API_KEY를 설정하세요.")
+        if settings.llm_request_cost <= 0:
+            raise ConfigurationError("실제 API 모드에서는 LLM 요청당 예상 비용을 양수로 설정하세요.")
+    budget = Budget(settings)
+    # Preserve the runtime's TLS trust and proxy settings; never follow redirects
+    # carrying the server's Authorization header to another host.
+    client = httpx.AsyncClient(timeout=httpx.Timeout(45, connect=10), follow_redirects=False)
+    if mode == "mock":
+        return MockRewriter(), budget, client
+    transport = AsyncTransport(client, budget)
+    return OpenAIRewriter(transport, llm_key, os.environ.get("LLM_MODEL", "gpt-4o-mini")), budget, client

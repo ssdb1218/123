@@ -55,18 +55,15 @@ def render_diff(before: str, after: str) -> None:
                         + "".join(chunks) + "</div>", unsafe_allow_html=True)
 
 
-def score_text(detection) -> str:
-    return f"{detection.score:.2f}%" if detection else "—"
-
-
 def render_history(state: RunState) -> None:
     for iteration in reversed(state.iterations):
-        score = f" · 최저 {iteration.best_score:.2f}%" if iteration.best_score is not None else ""
-        with st.expander(f"{iteration.number}회차{score}"):
+        with st.expander(f"{iteration.number}회차"):
             for candidate in iteration.candidates:
                 st.markdown(f"**후보 {candidate.id} · {'채택' if candidate.accepted else '미채택'}**")
-                st.caption(f"탐지 {score_text(candidate.detection)} · 의미 보존 "
-                           + (f"{candidate.semantic.score:.1%}" if candidate.semantic else "미평가")
+                st.caption("의미 보존 검토: "
+                           + (("통과" if candidate.semantic.preserves_meaning
+                               and candidate.semantic.score >= state.settings.min_semantic_score
+                               else "기준 미달") if candidate.semantic else "미평가")
                            + (" · 중요 수정" if candidate.major_change else ""))
                 if candidate.reason:
                     st.write(candidate.reason)
@@ -107,33 +104,30 @@ with st.sidebar:
     if mode == "mock":
         st.caption("API 키 없이 실행 흐름을 체험하는 모의 모드입니다.")
     else:
-        st.info("GPTZero 공식 API + OpenAI 문장 개선/의미 검토를 사용합니다. 각 서비스의 이용 조건과 지원 언어를 확인하세요.")
+        st.info("OpenAI로 문장 개선과 원문 의미 검토를 수행합니다. AI 탐지 점수는 측정하지 않습니다.")
         st.caption("LLM_API_KEY: " + ("설정됨" if os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY") else "미설정"))
-        st.caption("GPTZERO_API_KEY: " + ("설정됨" if os.getenv("GPTZERO_API_KEY") else "미설정"))
-    target = st.number_input("목표 AI 탐지 점수 (%)", min_value=0.0, max_value=100.0, value=5.0, step=1.0)
-    iterations = st.number_input("최대 반복 횟수", min_value=1, max_value=20, value=20)
-    candidates = st.number_input("반복당 후보", min_value=1, max_value=5, value=3)
+    iterations = st.number_input("최대 개선 회차", min_value=1, max_value=5, value=1)
+    candidates = st.number_input("회차당 후보", min_value=1, max_value=5, value=3)
     with st.expander("의미 보존·승인 기준", expanded=True):
-        min_semantic = st.slider("최소 의미 보존 점수", 0.0, 1.0, 0.90, 0.01)
+        min_semantic = st.slider("최소 의미 보존 평가", 0.0, 1.0, 0.90, 0.01,
+                                 help="원문과 후보의 의미 보존을 검토하는 모델 평가 기준입니다. AI 탐지 점수가 아닙니다.")
         require_approval = st.checkbox("중요 수정은 채택 전 사용자 승인", value=True)
-        patience = st.number_input("연속 미개선 시 종료 횟수", min_value=1, max_value=20, value=3)
     with st.expander("보호 및 비용 설정"):
         threshold = st.slider("중요 수정 분류 기준 (변경 비율)", 0.0, 1.0, 0.35, 0.05)
         terms = st.text_area("변경 금지 고유명사·전문 용어 (줄마다 하나)", help="수치·인용문은 자동 검사합니다. 고유명사는 여기에 명시하면 문자열 기준으로 보호합니다.")
         max_calls = st.number_input("총 API 요청 한도 (재시도 포함)", min_value=1, max_value=2000, value=200)
         max_cost = st.number_input("예상 비용 한도 (USD)", min_value=0.01, value=5.0, step=0.5)
-        detector_cost = st.number_input("탐지 요청당 보수적 예상 비용 (USD)", min_value=0.0, value=0.01, format="%.4f")
         llm_cost = st.number_input("LLM 요청당 보수적 예상 비용 (USD)", min_value=0.0, value=0.02, format="%.4f")
         st.caption("한도는 입력한 요청당 예상액을 호출 전에 예약해 적용합니다. 실제 청구액이 아니며 서비스 요금·토큰량에 맞춰 높게 설정하세요. 재시도도 요청으로 계산합니다.")
     output_formats = st.multiselect("다운로드 형식", ["PDF", "DOCX"], default=["PDF", "DOCX"])
     st.caption("전체 수정 이력은 JSON으로도 내려받을 수 있습니다.")
 
 settings = Settings(
-    target_score=target, max_iterations=iterations, candidates_per_iteration=candidates,
-    patience=patience, min_semantic_score=min_semantic, require_approval=require_approval,
+    max_iterations=iterations, candidates_per_iteration=candidates,
+    min_semantic_score=min_semantic, require_approval=require_approval,
     major_change_threshold=threshold, protected_terms=[term.strip() for term in terms.splitlines() if term.strip()],
     max_api_calls=max_calls, max_cost_usd=max_cost,
-    detector_request_cost=detector_cost, llm_request_cost=llm_cost,
+    detector_request_cost=0, llm_request_cost=llm_cost,
 )
 
 st.markdown('<section id="workspace" aria-label="글 다듬기"><p class="tl-section-label">YOUR WORKSPACE</p>'
@@ -141,9 +135,10 @@ st.markdown('<section id="workspace" aria-label="글 다듬기"><p class="tl-sec
             '<p class="tl-section-subtitle">원문을 붙여 넣거나 PDF에서 본문을 가져오세요. 수치·인용문은 보호하고, 중요한 수정은 먼저 확인합니다.</p></section>',
             unsafe_allow_html=True)
 if mode == "mock":
-    st.warning("테스트용 Mock 모드 · 판독 점수와 문장 개선은 모의 결과입니다. 실제 AI 판독 결과가 아닙니다.")
+    st.warning("테스트용 Mock 모드 · 공백·줄바꿈만 조정하는 체험 모드입니다. 실제 OpenAI 문장 개선을 실행하지 않습니다.")
 else:
-    st.info("실제 API 모드 · GPTZero로 판독하고 OpenAI로 문장을 개선합니다. 실행 전 글 전송에 동의해 주세요.")
+    st.info("실제 API 모드 · OpenAI로 자연스러움과 가독성을 개선합니다. 실행 전 글 전송에 동의해 주세요.")
+st.caption("AI 탐지 점수는 측정하지 않으며 점수 하락·탐지 회피·인간 작성 여부를 보장하지 않습니다.")
 
 
 def load_sample() -> None:
@@ -173,7 +168,7 @@ text = st.text_area("원본 텍스트", height=250, max_chars=MAX_TEXT_CHARS,
 st.caption(f"{len(text):,} / 20,000자 · 개인정보나 비밀정보는 입력하지 마세요.")
 consent = False
 if mode == "live":
-    consent = st.checkbox("입력 글과 수정 후보를 GPTZero·OpenAI에 전송하는 데 동의합니다.", key="external_consent")
+    consent = st.checkbox("입력 글과 수정 후보를 OpenAI에 전송하는 데 동의합니다.", key="external_consent")
     st.caption("비밀정보를 입력하지 마세요. 실제 API 모드는 키가 없거나 요청에 실패하면 중단하며 Mock으로 전환하지 않습니다.")
 
 
@@ -189,8 +184,6 @@ def workspace() -> None:
                 raise ValueError("실제 API 실행 전 외부 서비스 전송에 동의해 주세요.")
             if mode == "live" and not (os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")):
                 raise ValueError("문장 개선 API가 설정되지 않았습니다. 사이트 운영자에게 LLM_API_KEY 설정을 요청해 주세요.")
-            if mode == "live" and not os.getenv("GPTZERO_API_KEY"):
-                raise ValueError("판독 API가 설정되지 않았습니다. 사이트 운영자에게 GPTZERO_API_KEY 설정을 요청해 주세요.")
             new_worker = Worker(text.strip(), settings, mode)
             new_worker.start()
             worker = new_worker
@@ -200,36 +193,27 @@ def workspace() -> None:
             st.error(str(exc))
     if cols[1].button("중지", disabled=not running, use_container_width=True):
         worker.stop()
-        st.info("중지를 요청했습니다. 진행 중 요청 정리 후 현재까지의 최선 결과를 유지합니다.")
+        st.info("중지를 요청했습니다. 진행 중 요청 정리 후 마지막으로 채택한 본문을 유지합니다.")
     if not worker:
         render_empty_state()
         return
 
     state = worker.snapshot()
-    labels = {"initializing": "초기 점수 측정 중", "running": "후보 비교 중", "awaiting_approval": "중요 수정 승인 대기",
-              "completed": "실험 완료", "stopped": "중지됨", "error": "오류로 종료"}
+    labels = {"initializing": "문장 개선 준비 중", "running": "문장 개선·의미 검토 중", "awaiting_approval": "중요 수정 승인 대기",
+              "completed": "문장 개선 완료", "stopped": "중지됨", "error": "오류로 종료"}
     st.subheader(labels.get(state.status, state.status))
     if state.is_mock:
-        st.warning("이 실행의 점수는 전부 Mock 테스트 값입니다. 실제 탐지 정확도나 문장 개선 성능을 나타내지 않습니다.")
-    st.caption(f"실행 {state.id[:8]} · 목표 {state.settings.target_score:g}% · 최대 {state.settings.max_iterations}회 · "
+        st.warning("이 실행은 Mock 체험입니다. 실제 OpenAI 문장 개선이나 AI 판독을 수행하지 않습니다.")
+    st.caption(f"실행 {state.id[:8]} · 최대 {state.settings.max_iterations}회 · "
                f"후보 {state.settings.candidates_per_iteration}개 · 입력과 설정은 시작 시점 기준")
-    metrics = st.columns(4)
-    metrics[0].metric("최초 점수" + (" (Mock)" if state.is_mock else ""), score_text(state.initial))
-    metrics[1].metric("현재 점수", score_text(state.current))
-    metrics[2].metric("최저 점수", score_text(state.best))
-    metrics[3].metric("반복 횟수", f"{len(state.iterations)} / {state.settings.max_iterations}")
+    metrics = st.columns(3)
+    metrics[0].metric("개선 회차", f"{len(state.iterations)} / {state.settings.max_iterations}")
+    metrics[1].metric("채택한 수정", sum(candidate.accepted for iteration in state.iterations for candidate in iteration.candidates))
+    metrics[2].metric("현재 글자 수", f"{len(state.best_text or state.original_text):,}")
     progress_slot = st.empty()
     if running:
         progress_slot.progress(min(len(state.iterations) / state.settings.max_iterations, 1.0),
-                    text="후보의 의미와 점수를 비교하고 있습니다." if state.status != "awaiting_approval" else "중요 수정 확인을 기다리고 있습니다.")
-    if state.initial:
-        if state.initial.explanation:
-            st.caption(state.initial.provider + " · " + state.initial.explanation)
-        chart_rows = [{"회차": 0, "채택 점수": state.initial.score}]
-        for item in state.iterations:
-            if item.best_score is not None:
-                chart_rows.append({"회차": item.number, "채택 점수": item.best_score})
-        st.line_chart(chart_rows, x="회차", y="채택 점수", height=220)
+                    text="원문 의미와 보호 조건을 검토하고 있습니다." if state.status != "awaiting_approval" else "중요 수정 확인을 기다리고 있습니다.")
     if state.usage:
         with st.expander("API 사용량 및 예약 비용"):
             st.write(f"사용한 요청: {state.usage.get('api_calls', 0)}회 · 예약 비용: ${state.usage.get('reserved_cost_usd', 0):.4f}")
@@ -241,7 +225,7 @@ def workspace() -> None:
     if state.pending_candidate:
         pending = state.pending_candidate
         st.warning("중요 수정 후보입니다. 내용을 확인한 뒤 채택 여부를 결정하세요.")
-        st.write(f"후보 {pending.id} · 탐지 {score_text(pending.detection)}")
+        st.write(f"후보 {pending.id} · 수정 내용을 확인해 주세요.")
         render_diff(state.current_text or state.original_text, pending.text)
         for change in pending.changes:
             st.write("• " + change)
@@ -275,8 +259,8 @@ def workspace() -> None:
     with tabs[3]:
         if running:
             st.caption("실행을 마치거나 중지하면 현재까지의 결과와 전체 이력을 다운로드할 수 있습니다.")
-        elif state.best is None:
-            st.caption("최초 판독이 완료된 결과가 없습니다. API 설정과 오류 메시지를 확인하세요.")
+        elif state.status == "error" and not any(candidate.accepted for iteration in state.iterations for candidate in iteration.candidates):
+            st.caption("문장 개선 결과가 없습니다. API 설정과 오류 메시지를 확인하세요.")
         else:
             try:
                 files = export_files(state, tuple(output_formats))
@@ -287,7 +271,7 @@ def workspace() -> None:
                                        help=f"{extension.upper()} 다운로드",
                                        on_click="ignore",
                                        key=f"download-{state.id}-{extension}")
-                st.caption("최종 글, 점수, 설정, 수정 이력이 포함됩니다. 다운로드 파일에는 입력한 원문이 포함됩니다.")
+                st.caption("원문, 최종 채택본, 설정, 의미 검토와 수정 이력이 포함됩니다. AI 탐지 점수는 포함하지 않습니다.")
             except Exception:
                 st.error("파일을 생성하지 못했습니다. PDF용 한글 글꼴 및 내보내기 의존성을 확인해 주세요.")
 

@@ -87,14 +87,14 @@ def render_hero() -> None:
   <div>
     <p class="tl-eyebrow">WRITE WITH CLARITY</p>
     <h1 id="hero-title">전하고 싶은 의미는 그대로,<br><span>문장은 더 자연스럽게.</span></h1>
-    <p class="tl-lead">글의 흐름과 표현을 다듬고, 수정 전후를 직접 비교하세요.<br>AI 탐지 점수의 변화와 모든 수정 과정을 한곳에 기록합니다.</p>
+    <p class="tl-lead">글의 흐름과 표현을 다듬고, 수정 전후를 직접 비교하세요.<br>원문의 의미를 보존하며 자연스러움과 가독성을 개선합니다.</p>
     <a href="#workspace" class="tl-cta">내 글 다듬기 <span aria-hidden="true">↗</span></a>
-    <p class="tl-hero-note">테스트 모드로 먼저 체험할 수 있어요. 실제 API 검사는 별도 설정이 필요합니다.</p>
+    <p class="tl-hero-note">OpenAI 문장 개선을 사용합니다. AI 탐지 점수는 측정하지 않습니다.</p>
   </div>
   <aside class="tl-process" aria-label="문장 개선 과정">
     <p class="tl-process-title">한 번의 실행, 투명한 기록</p>
     <div class="tl-process-step"><b>01</b><div><strong>원문을 기준으로</strong><p>의미와 수치, 인용문을 지키며 개선합니다.</p></div></div>
-    <div class="tl-process-step"><b>02</b><div><strong>여러 후보를 비교해</strong><p>의미 보존과 같은 판독기의 점수를 확인합니다.</p></div></div>
+    <div class="tl-process-step"><b>02</b><div><strong>여러 후보를 비교해</strong><p>의미 보존과 수치·인용 보호 조건을 확인합니다.</p></div></div>
     <div class="tl-process-step"><b>03</b><div><strong>결정은 확인 가능하게</strong><p>중요 수정은 승인하고, 전체 이력을 내려받습니다.</p></div></div>
   </aside>
 </section>
@@ -106,7 +106,7 @@ def render_empty_state() -> None:
 <div class="tl-empty" role="status">
 <strong>첫 문장부터 시작해 볼까요?</strong>
 <p>위에 글을 붙여 넣거나 PDF·예시 글을 불러온 뒤 <b>시작</b>을 눌러주세요.<br>
-실행하면 점수 변화, 수정 후보, 원문 비교가 이곳에 표시됩니다.</p>
+실행하면 수정 후보, 의미 검토, 원문 비교가 이곳에 표시됩니다.</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -117,23 +117,23 @@ def render_guide(history_enabled: bool = True) -> None:
 <p class="tl-section-label">HOW IT WORKS</p>
 <h2 class="tl-section-title" id="guide-title">세 단계로 살펴보는 문장 개선</h2>
 <div class="tl-info-grid">
-<article class="tl-info-card"><span class="tl-number">STEP 01</span><h3>글과 기준을 정하세요</h3><p>원문을 입력하거나 PDF에서 본문을 가져오고 목표 점수와 반복 횟수를 선택하세요. 그대로 유지할 이름이나 전문 용어도 지정할 수 있습니다.</p></article>
-<article class="tl-info-card"><span class="tl-number">STEP 02</span><h3>의미를 지키며 비교하세요</h3><p>서로 다른 수정 후보를 비교합니다. 점수가 개선되고 의미 보존 기준을 통과한 후보만 채택하며, 중요 수정은 승인을 기다립니다.</p></article>
+<article class="tl-info-card"><span class="tl-number">STEP 01</span><h3>글과 기준을 정하세요</h3><p>원문을 입력하거나 PDF에서 본문을 가져오고 개선 회차와 후보 수를 선택하세요. 그대로 유지할 이름이나 전문 용어도 지정할 수 있습니다.</p></article>
+<article class="tl-info-card"><span class="tl-number">STEP 02</span><h3>의미를 지키며 비교하세요</h3><p>서로 다른 수정 후보를 비교합니다. 의미 보존과 보호 조건을 통과한 후보를 검토하며, 중요 수정은 승인을 기다립니다.</p></article>
 <article class="tl-info-card"><span class="tl-number">STEP 03</span><h3>과정까지 가져가세요</h3><p>원문과 결과를 나란히 확인하세요. 최종 글과 수정 이력은 PDF·DOCX로, 전체 실행 기록은 JSON으로 저장할 수 있습니다.</p></article>
 </div>
 </section>
 <div id="questions"><p class="tl-section-label">GOOD TO KNOW</p><h2 class="tl-section-title">시작하기 전에 알아두세요</h2></div>
 """, unsafe_allow_html=True)
-    with st.expander("테스트 모드와 실제 API 검사는 어떻게 다른가요?"):
-        st.write("테스트용 Mock은 화면과 실행 흐름을 체험하는 모드입니다. 점수와 문장 개선은 모두 모의 결과이며 실제 판독 성능을 나타내지 않습니다. 실제 API 모드는 운영자가 설정한 GPTZero와 OpenAI를 사용하며, 입력 글 전송에 동의한 뒤 실행합니다.")
-    with st.expander("목표 점수 이하가 되면 사람이 쓴 글인가요?"):
-        st.write("그렇지 않습니다. 탐지 점수는 서비스별 추정치로 오탐이 있으며, 인간 작성 여부를 증명하지 않습니다. 기본 목표인 5%나 0% 달성도 보장하지 않습니다. 의미 보존 점수 역시 자동 평가이므로 최종 사실관계는 직접 확인해 주세요.")
+    with st.expander("테스트 모드와 실제 문장 개선은 어떻게 다른가요?"):
+        st.write("테스트용 Mock은 공백과 줄바꿈을 조정하며 실행 흐름을 체험하는 모드입니다. 실제 API 모드는 운영자가 설정한 OpenAI로 문장을 개선하고 의미 보존을 검토하며, 입력 글 전송에 동의한 뒤 실행합니다.")
+    with st.expander("AI 탐지 점수가 낮아지나요?"):
+        st.write("이 사이트는 AI 탐지 점수를 측정하지 않습니다. 문장이 자연스러워져도 탐지 점수가 낮아졌는지 확인할 수 없으며, 점수 하락·탐지 회피·인간 작성 여부를 보장하지 않습니다. 의미 보존 검토도 모델 평가이므로 최종 사실관계는 직접 확인해 주세요.")
     with st.expander("입력한 글과 수정 기록은 어디에 남나요?"):
         if history_enabled:
             st.write("원문과 수정 이력은 이 웹사이트를 실행하는 서버에 평문으로 저장됩니다. 저장 기록 삭제는 사이트 운영자에게 요청할 수 있습니다.")
         else:
             st.write("이 사이트는 서버에 실행 기록 파일을 남기지 않도록 설정되어 있습니다. 글과 결과는 실행 중인 세션에 유지되며, 직접 다운로드할 수 있습니다.")
-        st.write("실제 API 모드에서는 원문과 수정 후보가 GPTZero·OpenAI에 전송됩니다. 비밀정보와 민감한 개인정보는 입력하지 마세요.")
+        st.write("실제 API 모드에서는 원문과 수정 후보가 OpenAI에 전송됩니다. 비밀정보와 민감한 개인정보는 입력하지 마세요.")
     st.markdown("""
-<footer class="tl-footer"><span><b>서스데반의 AI 판독기</b></span><span>점수보다 중요한 것은 글의 의미와 정확성입니다.</span></footer>
+<footer class="tl-footer"><span><b>서스데반의 AI 판독기</b></span><span>글의 의미와 사실관계를 직접 확인하세요.</span></footer>
 """, unsafe_allow_html=True)

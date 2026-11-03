@@ -6,7 +6,7 @@ import pytest
 
 from textlab.models import Settings
 from textlab.providers import (
-    GPTZeroDetector, MockDetector, MockRewriter, OpenAIRewriter, build_providers,
+    GPTZeroDetector, MockDetector, MockRewriter, OpenAIRewriter, build_editing_providers, build_providers,
 )
 from textlab.transport import APIError, AsyncTransport, Budget, BudgetExceeded, ConfigurationError
 
@@ -216,4 +216,100 @@ def test_mock_labels_are_explicit_and_no_real_requests_or_cost():
             assert budget.snapshot()["reserved_cost_usd"] == 0
         finally:
             await client.aclose()
+    run(scenario())
+
+
+@pytest.mark.parametrize("key_name", ["LLM_API_KEY", "OPENAI_API_KEY"])
+def test_live_editing_needs_only_openai_and_sends_only_openai_requests(monkeypatch, key_name):
+    import textlab.providers as providers
+
+    for name in ("LLM_API_KEY", "OPENAI_API_KEY", "GPTZERO_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(key_name, "fake-editing-key")
+    monkeypatch.setenv("LLM_MODEL", "gpt-4o-mini")
+
+    def forbidden_detector(*args, **kwargs):
+        pytest.fail("The editing workflow must never construct a GPTZero detector")
+
+    monkeypatch.setattr(providers, "GPTZeroDetector", forbidden_detector)
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        assert request.url.host == "api.openai.com"
+        assert request.headers["authorization"] == "Bearer fake-editing-key"
+        payload = json.loads(request.content)
+        assert payload["model"] == "gpt-4o-mini"
+        if len(requests) == 1:
+            return httpx.Response(200, json=llm_response({"candidates": [
+                {"text": "개선한 본문입니다.", "changes": ["흐름 개선"], "major_change": False}]}))
+        assert json.loads(payload["messages"][1]["content"]) == {
+            "original": "원문입니다.", "candidate": "개선한 본문입니다."
+        }
+        return httpx.Response(200, json=llm_response({
+            "score": .97, "preserves_meaning": True, "reason": "원문 의미 유지"}))
+
+    real_client = httpx.AsyncClient
+
+    def mocked_client(**kwargs):
+        assert kwargs["follow_redirects"] is False
+        return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(providers.httpx, "AsyncClient", mocked_client)
+
+    async def scenario():
+        rewriter, budget, client = build_editing_providers("live", Settings(detector_request_cost=0))
+        try:
+            assert not rewriter.is_mock
+            revisions = await rewriter.generate("원문입니다.", "원문입니다.", 1, {})
+            assessment = await rewriter.assess("원문입니다.", revisions[0].text)
+            assert assessment.preserves_meaning
+            assert budget.snapshot()["api_calls"] == 2
+            assert budget.snapshot()["reserved_cost_usd"] == .04
+            assert len(requests) == 2
+        finally:
+            await client.aclose()
+
+    run(scenario())
+
+
+def test_editing_configuration_does_not_request_gptzero_key(monkeypatch):
+    for name in ("LLM_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GPTZERO_API_KEY", "unused-detector-key")
+
+    with pytest.raises(ConfigurationError, match="LLM_API_KEY") as error:
+        build_editing_providers("live", Settings())
+
+    assert "GPTZERO" not in str(error.value)
+
+
+def test_mock_editing_has_no_detector_requests_or_cost(monkeypatch):
+    async def scenario():
+        rewriter, budget, client = build_editing_providers("mock", Settings())
+        try:
+            assert rewriter.is_mock
+            revisions = await rewriter.generate("내용 123", "내용 123", 1, {})
+            assert (await rewriter.assess("내용 123", revisions[0].text)).preserves_meaning
+            assert budget.snapshot()["api_calls"] == 0
+            assert budget.snapshot()["reserved_cost_usd"] == 0
+        finally:
+            await client.aclose()
+    run(scenario())
+
+
+def test_editing_openai_403_identifies_service_without_leaking_response_or_key():
+    async def scenario():
+        budget = Budget(Settings())
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda request: httpx.Response(403, json={"error": "private-response-body"})
+        )) as client:
+            rewriter = OpenAIRewriter(AsyncTransport(client, budget), "private-api-key")
+            with pytest.raises(APIError, match="OpenAI API HTTP 403") as error:
+                await rewriter.generate("private-original", "private-original", 1, {})
+        message = str(error.value)
+        assert "private-response-body" not in message
+        assert "private-api-key" not in message
+        assert "private-original" not in message
+        assert budget.snapshot()["api_calls"] == 1
     run(scenario())

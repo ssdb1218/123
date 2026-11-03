@@ -20,7 +20,8 @@ class Worker:
         self.control = Control()
         self.mode = mode
         self._lock = threading.Lock()
-        self._state = RunState(original_text=text, settings=copy.deepcopy(settings), is_mock=mode == "mock")
+        self._state = RunState(original_text=text, settings=copy.deepcopy(settings),
+                               is_mock=mode == "mock", editing_only=True)
         self._answered: set[str] = set()
         self._started = False
         self._slot_reserved = False
@@ -86,8 +87,8 @@ class Worker:
             self._release_slot()
 
     async def _execute(self) -> None:
-        from textlab.engine import Engine
-        from textlab.providers import build_providers
+        from textlab.editor import EditingEngine
+        from textlab.providers import build_editing_providers
         from textlab.web_runtime import audit_directory, validate_live_hosting
 
         client: Any = None
@@ -95,8 +96,8 @@ class Worker:
             state = self.snapshot()
             if self.mode == "live":
                 validate_live_hosting()
-            detector, rewriter, budget, client = build_providers(self.mode, state.settings)
-            result = await Engine(detector, rewriter, budget, history_dir=audit_directory()).run(
+            rewriter, budget, client = build_editing_providers(self.mode, state.settings)
+            result = await EditingEngine(rewriter, budget, history_dir=audit_directory()).run(
                 state.original_text, state.settings, on_update=self._publish, control=self.control
             )
             self._publish(result)

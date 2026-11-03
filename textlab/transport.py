@@ -84,6 +84,9 @@ class AsyncTransport:
 
     async def request_json(self, kind: str, method: str, url: str, *,
                            headers: dict[str, str], payload: dict[str, Any]) -> dict:
+        service = {"api.openai.com": "OpenAI", "api.gptzero.me": "GPTZero"}.get(
+            httpx.URL(url).host, "외부"
+        )
         for attempt in range(self.max_attempts):
             self.budget.reserve(kind)
             try:
@@ -91,7 +94,7 @@ class AsyncTransport:
                                                      json=payload)
             except (httpx.TimeoutException, httpx.NetworkError, httpx.ProxyError):
                 if attempt + 1 == self.max_attempts:
-                    raise APIError("API 연결 또는 응답 시간 초과입니다. 네트워크·허용 도메인을 확인하세요.") from None
+                    raise APIError(f"{service} API 연결 또는 응답 시간 초과입니다. 네트워크·허용 도메인을 확인하세요.") from None
                 await asyncio.sleep(self.backoff_seconds * 2 ** attempt)
                 continue
 
@@ -117,7 +120,7 @@ class AsyncTransport:
                     429: "호출 제한 또는 계정 잔액을 확인하세요.",
                 }
                 hint = explanations.get(response.status_code, "서비스 상태를 확인하세요.")
-                raise APIError(f"API HTTP {response.status_code}: {hint}")
+                raise APIError(f"{service} API HTTP {response.status_code}: {hint}")
             try:
                 body = response.json()
             except (ValueError, UnicodeError):

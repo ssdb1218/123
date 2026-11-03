@@ -120,6 +120,7 @@ class RunState:
     usage: dict[str, Any] = field(default_factory=dict)
     analysis: dict[str, Any] = field(default_factory=dict)
     is_mock: bool = False
+    editing_only: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
