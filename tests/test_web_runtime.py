@@ -49,6 +49,49 @@ def test_preserves_env_even_when_streamlit_parser_exports_root_values(monkeypatc
     assert os.environ["LLM_API_KEY"] == "existing-value"
 
 
+@pytest.mark.parametrize("name", ["LLM_API_KEY", "GPTZERO_API_KEY"])
+@pytest.mark.parametrize("blank", ["", " \t\n "])
+def test_blank_api_environment_values_are_filled_from_root_secrets(monkeypatch, capsys, name, blank):
+    import os
+
+    monkeypatch.setenv(name, blank)
+    monkeypatch.setattr(web_runtime.st, "secrets", {name: "fake-configured-api-key"})
+
+    web_runtime._load_secret_defaults()
+
+    assert os.environ[name] == "fake-configured-api-key"
+    assert capsys.readouterr() == ("", "")
+
+
+@pytest.mark.parametrize("existing_name", ["LLM_API_KEY", "GPTZERO_API_KEY"])
+@pytest.mark.parametrize("blank", ["", " \t\n "])
+def test_parser_exports_fill_blank_api_values_and_preserve_valid_bindings(monkeypatch, capsys, existing_name, blank):
+    import os
+
+    secrets = {"LLM_API_KEY": "fake-secret-llm-key", "GPTZERO_API_KEY": "fake-secret-detector-key"}
+    blank_name = next(name for name in secrets if name != existing_name)
+
+    class ExportingSecrets:
+        parsed = False
+
+        def __getitem__(self, name):
+            if not self.parsed:
+                # Streamlit exports all root scalars during its initial parse.
+                os.environ.update(secrets)
+                self.parsed = True
+            return secrets[name]
+
+    monkeypatch.setenv(existing_name, "fake-existing-runtime-key")
+    monkeypatch.setenv(blank_name, blank)
+    monkeypatch.setattr(web_runtime.st, "secrets", ExportingSecrets())
+
+    web_runtime._load_secret_defaults()
+
+    assert os.environ[existing_name] == "fake-existing-runtime-key"
+    assert os.environ[blank_name] == secrets[blank_name]
+    assert capsys.readouterr() == ("", "")
+
+
 def test_missing_secrets_file_is_optional(monkeypatch):
     class MissingSecrets:
         def __getitem__(self, name):

@@ -27,7 +27,8 @@ def _load_secret_defaults() -> None:
     Streamlit itself exports root TOML scalars on first access. Restore our known
     existing bindings after that parse so environment settings retain precedence.
     """
-    existing = {name: os.environ[name] for name in _SECRET_KEYS if name in os.environ}
+    existing = {name: os.environ[name] for name in _SECRET_KEYS
+                if os.environ.get(name, "").strip()}
     try:
         for name in _SECRET_KEYS:
             try:
@@ -38,7 +39,10 @@ def _load_secret_defaults() -> None:
                 continue
             if type(value) not in (str, int, bool):
                 raise ConfigurationError(f"Streamlit Secrets의 {name}은 문자열·정수·불리언이어야 합니다.")
-            os.environ.setdefault(name, str(value).lower() if type(value) is bool else str(value))
+            # Empty placeholders from .env files must not mask a configured
+            # secret. Preserve non-empty injected bindings, including proxies.
+            if not os.environ.get(name, "").strip():
+                os.environ[name] = str(value).lower() if type(value) is bool else str(value)
     except StreamlitSecretNotFoundError as exc:
         # This Streamlit version also wraps TOML parse failures in this class.
         # Missing files have a distinct message. Invalid paths can also use this
