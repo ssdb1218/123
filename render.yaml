@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: textlab
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /_stcore/health
+    autoDeploy: false
+    envVars:
+      - key: TEXTLAB_HOSTED
+        value: "1"
+      - key: TEXTLAB_SAVE_HISTORY
+        value: "0"
+      - key: TEXTLAB_MAX_CONCURRENT_RUNS
+        value: "2"
+      - key: LLM_MODEL
+        value: gpt-4o-mini
